@@ -45,6 +45,11 @@ typedef enum {
     /// Publishes several ranges in one request. Input: destination and range
     /// count; send buffers contain KaihenJitRange[] and concatenated bytes.
     KaihenRoCommand_PublishJitRanges = 65015,
+    /// Maps an image whose code and data must stay together. Input:
+    /// destination, source, size and range count; a send buffer contains
+    /// KaihenJitImageRange[]. The pages that no range covers are R.
+    /// KaihenRoCommand_UnmapJitCode unmaps the image.
+    KaihenRoCommand_MapJitImage = 65016,
 } KaihenRoCommand;
 
 /// A byte range within a JIT mapping. Payload bytes follow range order.
@@ -52,6 +57,15 @@ typedef struct {
     u64 offset;
     u64 size;
 } KaihenJitRange;
+
+/// Pages of an image and their permission: Perm_R, Perm_Rw or Perm_Rx.
+/// Ranges are page-aligned and in ascending order, and do not overlap.
+typedef struct {
+    u64 offset;
+    u64 size;
+    u32 permission;
+    u32 reserved;
+} KaihenJitImageRange;
 
 /// RO's local view of a persistent JIT alias, returned by MapJitAlias.
 typedef struct {
@@ -64,8 +78,10 @@ typedef struct {
 
 #ifdef __cplusplus
 static_assert(sizeof(KaihenJitAliasInfo) == 24, "JIT alias info layout");
+static_assert(sizeof(KaihenJitImageRange) == 24, "JIT image range layout");
 #else
 _Static_assert(sizeof(KaihenJitAliasInfo) == 24, "JIT alias info layout");
+_Static_assert(sizeof(KaihenJitImageRange) == 24, "JIT image range layout");
 #endif
 
 /// HEN's commands on a homebrew session.

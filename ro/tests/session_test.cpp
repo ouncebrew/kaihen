@@ -19,6 +19,17 @@ static u32 g_jitMapCount, g_jitUnmapCount;
 static u32 g_aliasMapCount, g_aliasUnmapCount, g_aliasFlushCount;
 static Result g_aliasUnmapResult;
 alignas(4096) static u8 g_aliasMemory[0x4000];
+
+// MapJitImage maps its images at ImageBase and above, from 0x44444000 below.
+constexpr u64 ImageBase = 0x70000000;
+struct PermissionCall {
+    u64 address;
+    u64 size;
+    u32 permission;
+};
+static PermissionCall g_imagePermissions[8];
+static u32 g_imagePermissionCount, g_imageMapCount, g_imageUnmapCount;
+static u32 g_imagePermissionFailure = UINT32_MAX;
 static Handle g_controlHandle;
 Result roControlAdopt(Handle handle, u64* pid) {
     g_controlHandle = handle;
@@ -44,6 +55,11 @@ Result svcGetProcessId(u64* pid, Handle handle) {
 }
 
 Result svcMapProcessCodeMemory(Handle process, u64 destination, u64 source, u64 size) {
+    if (destination >= ImageBase) {
+        assert(process == 42 && source == destination - 0x44444000 && size == 0x4000);
+        g_imageMapCount++;
+        return 0;
+    }
     assert(process == 42 && destination >= 0x56789000 &&
            destination < 0x56789000 + RoMaxJit * 0x2000ULL &&
            (destination - 0x56789000) % 0x2000 == 0 &&
@@ -53,6 +69,11 @@ Result svcMapProcessCodeMemory(Handle process, u64 destination, u64 source, u64 
 }
 
 Result svcSetProcessMemoryPermission(Handle process, u64 destination, u64 size, u32 permission) {
+    if (destination >= ImageBase) {
+        assert(process == 42 && g_imagePermissionCount < 8);
+        g_imagePermissions[g_imagePermissionCount] = {destination, size, permission};
+        return g_imagePermissionCount++ == g_imagePermissionFailure ? KERNELRESULT(InvalidMemoryState) : 0;
+    }
     assert(process == 42 && destination >= 0x56789000 &&
            destination < 0x56789000 + RoMaxJit * 0x2000ULL &&
            (destination - 0x56789000) % 0x2000 == 0 &&
@@ -61,6 +82,11 @@ Result svcSetProcessMemoryPermission(Handle process, u64 destination, u64 size, 
 }
 
 Result svcUnmapProcessCodeMemory(Handle process, u64 destination, u64 source, u64 size) {
+    if (destination >= ImageBase) {
+        assert(process == 42 && source == destination - 0x44444000 && size == 0x4000);
+        g_imageUnmapCount++;
+        return 0;
+    }
     assert(process == 42 && destination >= 0x56789000 &&
            destination < 0x56789000 + RoMaxJit * 0x2000ULL &&
            (destination - 0x56789000) % 0x2000 == 0 &&
@@ -104,6 +130,9 @@ extern "C" void armDCacheFlush(void* address, size_t size) {
 
 // Sends one of the JIT commands that take a destination, source and size.
 static void jitRequest(u32* words, u32 command, u64 destination, u64 source, u64 size);
+
+// Sends MapJitImage for a four-page image at ImageBase.
+static void imageRequest(u32* words, const KaihenJitImageRange* ranges, u64 count, u32 ranges_size);
 
 Result roMapImage(Handle process, const RoImageRequest& request, RoLoadedImage* record,
                   const RoLoadedImage* existing, u32 existing_count, u64* base) {
@@ -318,6 +347,68 @@ int main(void) {
     roDispatch(sessions, 2, 0, words);
     assert(words[6] == 0 && words[8] == 1);
 
+    // An image is one mapping: each range gets its permission, and the
+    // pages between and after the ranges are R.
+    const KaihenJitImageRange image_ranges[2] = {{0, 0x1000, Perm_Rx, 0}, {0x2000, 0x1000, Perm_Rw, 0}};
+    imageRequest(words, image_ranges, 2, sizeof(image_ranges));
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == 0 && g_imageMapCount == 1 && g_imagePermissionCount == 4);
+    const PermissionCall expected[4] = {
+        {ImageBase, 0x1000, Perm_Rx},
+        {ImageBase + 0x1000, 0x1000, Perm_R},
+        {ImageBase + 0x2000, 0x1000, Perm_Rw},
+        {ImageBase + 0x3000, 0x1000, Perm_R},
+    };
+    for (u32 i = 0; i < 4; i++) {
+        assert(g_imagePermissions[i].address == expected[i].address &&
+               g_imagePermissions[i].size == expected[i].size &&
+               g_imagePermissions[i].permission == expected[i].permission);
+    }
+    jitRequest(words, RoCmd_UnmapJitCode, ImageBase, ImageBase - 0x44444000, 0x4000);
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == 0 && g_imageUnmapCount == 1);
+
+    // Ranges with RWX or W, that overlap, are out of order, unaligned or
+    // outside the image, or that do not fill the buffer are rejected before
+    // any system call.
+    const KaihenJitImageRange bad_ranges[][2] = {
+        {{0, 0x1000, Perm_R | Perm_W | Perm_X, 0}, {0x2000, 0x1000, Perm_Rw, 0}},
+        {{0, 0x1000, Perm_Rx, 0}, {0x2000, 0x1000, Perm_W, 0}},
+        {{0, 0x2000, Perm_Rx, 0}, {0x1000, 0x1000, Perm_Rw, 0}},
+        {{0x2000, 0x1000, Perm_Rx, 0}, {0, 0x1000, Perm_Rw, 0}},
+        {{0, 0x800, Perm_Rx, 0}, {0x2000, 0x1000, Perm_Rw, 0}},
+        {{0, 0x1000, Perm_Rx, 0}, {0x3000, 0x2000, Perm_Rw, 0}},
+    };
+    for (const auto& ranges : bad_ranges) {
+        imageRequest(words, ranges, 2, sizeof(ranges));
+        roDispatch(sessions, 2, 0, words);
+        assert(words[6] == RoResult_BadRequest);
+    }
+    imageRequest(words, image_ranges, 2, sizeof(image_ranges[0]));
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == RoResult_BadRequest && g_imageMapCount == 1 && g_imagePermissionCount == 4);
+
+    // A permission that fails unmaps the image again, and nothing is recorded.
+    g_imagePermissionCount = 0;
+    g_imagePermissionFailure = 2;
+    imageRequest(words, image_ranges, 2, sizeof(image_ranges));
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == KERNELRESULT(InvalidMemoryState) && g_imageMapCount == 2 &&
+           g_imagePermissionCount == 3 && g_imageUnmapCount == 2);
+    g_imagePermissionCount = 0;
+    g_imagePermissionFailure = UINT32_MAX;
+    request(words, RoCmd_ReleaseJitCode, 10, 1, 0);
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == 0 && words[8] == 0);
+
+    // ReleaseJitCode unmaps images too.
+    imageRequest(words, image_ranges, 2, sizeof(image_ranges));
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == 0 && g_imageMapCount == 3);
+    request(words, RoCmd_ReleaseJitCode, 10, 1, 0);
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == 0 && words[8] == 1 && g_imageUnmapCount == 3);
+
     request(words, RoCmd_UnloadNrr, 12, 1, 0);
     words[14] = 0x22345000;
     roDispatch(sessions, 2, 0, words);
@@ -394,4 +485,24 @@ static void jitRequest(u32* words, u32 command, u64 destination, u64 source, u64
     words[14] = static_cast<u32>(destination);
     words[16] = static_cast<u32>(source);
     words[18] = static_cast<u32>(size);
+}
+
+static void imageRequest(u32* words, const KaihenJitImageRange* ranges, u64 count, u32 ranges_size) {
+    memset(words, 0, 64 * sizeof(*words));
+    HipcRequest image = hipcMakeRequestInline(words,
+        .type = CmifCommandType_RequestWithContext,
+        .num_send_buffers = 1,
+        .num_data_words = 18,
+        .send_pid = true);
+    words[3] = 213;
+    image.send_buffers[0] = hipcMakeBuffer(ranges, ranges_size, HipcBufferMode_Normal);
+    CmifInHeader* header = (CmifInHeader*)cmifGetAlignedDataStart(image.data_words, words);
+    header->magic = CMIF_IN_HEADER_MAGIC;
+    header->version = 1;
+    header->command_id = RoCmd_MapJitImage;
+    u64* args = (u64*)(header + 1);
+    args[1] = ImageBase;
+    args[2] = ImageBase - 0x44444000;
+    args[3] = 0x4000;
+    args[4] = count;
 }

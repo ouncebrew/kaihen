@@ -40,6 +40,16 @@ sessions. This is the helper's record limit; kernel mapping and available
 memory limits can be lower. The 512-slot console probe is `jit-capacity.nro`.
 It passed the host test and a console test.
 
+## Images
+
+Position-independent code reaches its data at a fixed offset, so the two
+must be mapped together. `kaihenMapJitImage` maps one span of heap pages as
+a single RO mapping (private command 65016) and sets each listed range to R,
+RW or RX; the pages it does not list are R. RO never maps a page RWX. The
+caller cleans the source's data cache before and invalidates the code's
+instruction cache after. `kaihenUnmapJitImage` unmaps it, and hbloader's
+65012 releases images like other JIT mappings.
+
 Do not modify a block another thread is executing. A thread entering newly
 published code must synchronize with the publisher and invalidate its own RX
 instruction range. The publisher's invalidation does not synchronize every
