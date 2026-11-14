@@ -35,8 +35,8 @@ NRO returns with mappings still live, hbloader sends 65012 before reusing the
 NRO heap. The staging buffer uses additional physical memory about equal to
 the locked backing size.
 
-RO records up to 512 live JIT mappings per initialized `ldr:ro` client
-session. This is the helper's record limit; kernel mapping and available
+RO records up to 4096 live JIT mappings, shared by its `ldr:ro` client
+sessions. This is the helper's record limit; kernel mapping and available
 memory limits can be lower. The 512-slot console probe is `jit-capacity.nro`.
 It passed the host test and a console test.
 

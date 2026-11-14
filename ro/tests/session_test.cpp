@@ -187,7 +187,7 @@ int main(void) {
 
     jitRequest(words, RoCmd_MapJitCode, 0x56789000, 0x12345000, 0x2000);
     roDispatch(sessions, 2, 0, words);
-    assert(words[6] == 0 && g_jitMapCount == 1 && sessions[0].jit[0].size == 0x2000);
+    assert(words[6] == 0 && g_jitMapCount == 1);
 
     request(words, RoCmd_MapJitAlias, 14, 1, 0);
     words[14] = 0x56789000;
@@ -195,7 +195,7 @@ int main(void) {
     roDispatch(sessions, 2, 0, words);
     assert(words[6] == 0 && words[8] == (u32)(u64)g_aliasMemory);
     assert(words[10] == 0 && words[11] == Perm_Rw && words[12] == 0);
-    assert(g_aliasMapCount == 1 && sessions[0].jit[0].alias == g_aliasMemory);
+    assert(g_aliasMapCount == 1);
 
     const u32 replacement = 0x52800560;
     memset(words, 0, sizeof(words));
@@ -271,8 +271,7 @@ int main(void) {
 
     jitRequest(words, RoCmd_UnmapJitCode, 0x56789000, 0x12345000, 0x2000);
     roDispatch(sessions, 2, 0, words);
-    assert(words[6] == 0 && g_jitUnmapCount == 1 && g_aliasUnmapCount == 1 &&
-           sessions[0].jit[0].size == 0);
+    assert(words[6] == 0 && g_jitUnmapCount == 1 && g_aliasUnmapCount == 1);
 
     // The loader releases what an NRO left mapped.
     jitRequest(words, RoCmd_MapJitCode, 0x56789000, 0x12345000, 0x2000);
@@ -289,12 +288,11 @@ int main(void) {
     roDispatch(sessions, 2, 0, words);
     assert(words[6] == 0 && words[8] == 2 && g_jitUnmapCount == 3 &&
            g_aliasUnmapCount == 2);
-    assert(sessions[0].jit[0].size == 0 && sessions[0].jit[1].size == 0);
     request(words, RoCmd_ReleaseJitCode, 10, 1, 0);
     roDispatch(sessions, 2, 0, words);
     assert(words[6] == 0 && words[8] == 0 && g_jitUnmapCount == 3);
 
-    // All 512 client JIT slots can be used, the next map fails without
+    // All RoMaxJit JIT slots can be used, the next map fails without
     // touching the kernel, and ReleaseJitCode makes every slot reusable.
     const u32 maps_before_capacity_test = g_jitMapCount;
     for (u32 i = 0; i < RoMaxJit; i++) {
@@ -302,7 +300,7 @@ int main(void) {
         jitRequest(words, RoCmd_MapJitCode, destination,
                    destination - 0x44444000ULL, 0x2000);
         roDispatch(sessions, 2, 0, words);
-        assert(words[6] == 0 && sessions[0].jit[i].destination == destination);
+        assert(words[6] == 0);
     }
     assert(g_jitMapCount == maps_before_capacity_test + RoMaxJit);
     jitRequest(words, RoCmd_MapJitCode, 0x60000000, 0x1bbbc000, 0x2000);
@@ -313,11 +311,9 @@ int main(void) {
     request(words, RoCmd_ReleaseJitCode, 10, 1, 0);
     roDispatch(sessions, 2, 0, words);
     assert(words[6] == 0 && words[8] == RoMaxJit);
-    for (u32 i = 0; i < RoMaxJit; i++)
-        assert(sessions[0].jit[i].size == 0);
     jitRequest(words, RoCmd_MapJitCode, 0x56789000, 0x12345000, 0x2000);
     roDispatch(sessions, 2, 0, words);
-    assert(words[6] == 0 && sessions[0].jit[0].size == 0x2000);
+    assert(words[6] == 0);
     request(words, RoCmd_ReleaseJitCode, 10, 1, 0);
     roDispatch(sessions, 2, 0, words);
     assert(words[6] == 0 && words[8] == 1);
@@ -377,15 +373,19 @@ int main(void) {
     assert(roSessionClose(&sessions[0]) == g_aliasUnmapResult);
     assert(g_closeCount == 5 && g_closed[4] == 42);
     assert(sessions[0].process_handle == 0 && sessions[0].process_id == 0);
-    assert(sessions[0].jit[0].size == 0 && sessions[0].jit[0].alias == nullptr);
     const RoDiagnostics diagnostics = roGetDiagnostics();
     assert(diagnostics.cleanup_failures == 1 &&
            diagnostics.last_cleanup_result == g_aliasUnmapResult);
 
-    // The cleared context serves the next client.
+    // The cleared context serves the next client, without the old client's
+    // JIT mappings.
     request(words, RoCmd_Initialize, 10, 3, 42);
     roDispatch(sessions, 2, 0, words);
     assert(words[6] == 0 && sessions[0].process_handle == 42);
+    const u32 unmaps_before_release = g_jitUnmapCount;
+    request(words, RoCmd_ReleaseJitCode, 10, 1, 0);
+    roDispatch(sessions, 2, 0, words);
+    assert(words[6] == 0 && words[8] == 0 && g_jitUnmapCount == unmaps_before_release);
     return 0;
 }
 

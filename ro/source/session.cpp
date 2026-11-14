@@ -18,6 +18,9 @@ constexpr u64 PageMask = 0xfff;
 
 RoDiagnostics g_ro_diagnostics = {};
 
+/// The JIT mappings of every client context.
+RoJitMapping g_jit[RoMaxJit] = {};
+
 /// What a command returns besides its result. Each part is sent only when
 /// the command succeeds.
 struct CommandReply {
@@ -151,16 +154,24 @@ Result unloadNro(RoSession* s, u64 base) {
 //-----------------------------------------------------------------------------
 
 RoJitMapping* findJitMapping(RoSession* s, u64 destination, u64 size) {
-    for (RoJitMapping& entry : s->jit) {
-        if (entry.size && entry.destination == destination && entry.size == size)
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.size && entry.owner == s && entry.destination == destination && entry.size == size)
             return &entry;
     }
     return nullptr;
 }
 
 RoJitMapping* findJitAlias(RoSession* s, u64 destination) {
-    for (RoJitMapping& entry : s->jit) {
-        if (entry.destination == destination && entry.alias)
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.owner == s && entry.destination == destination && entry.alias)
+            return &entry;
+    }
+    return nullptr;
+}
+
+RoJitMapping* findFreeJitMapping() {
+    for (RoJitMapping& entry : g_jit) {
+        if (!entry.size)
             return &entry;
     }
     return nullptr;
@@ -172,13 +183,7 @@ Result mapJitCode(RoSession* s, u64 destination, u64 source, u64 size) {
     if (!isPageRange(destination, size) || !isPageRange(source, size))
         return RoResult_BadRequest;
 
-    RoJitMapping* entry = nullptr;
-    for (RoJitMapping& candidate : s->jit) {
-        if (!candidate.size) {
-            entry = &candidate;
-            break;
-        }
-    }
+    RoJitMapping* entry = findFreeJitMapping();
     if (!entry)
         return RoResult_OutOfAddressSpace;
 
@@ -191,7 +196,7 @@ Result mapJitCode(RoSession* s, u64 destination, u64 source, u64 size) {
         return rc;
     }
 
-    *entry = RoJitMapping{destination, source, size, nullptr};
+    *entry = RoJitMapping{s, destination, source, size, nullptr};
     return 0;
 }
 
@@ -312,8 +317,8 @@ Result unmapJitCode(RoSession* s, u64 destination, u64 source, u64 size) {
 Result releaseJitCode(RoSession* s, CommandReply* reply) {
     Result last_failure = 0;
     u64 count = 0;
-    for (RoJitMapping& entry : s->jit) {
-        if (!entry.size)
+    for (RoJitMapping& entry : g_jit) {
+        if (!entry.size || entry.owner != s)
             continue;
         const Result rc = unmapJitEntry(s, &entry);
         if (R_SUCCEEDED(rc))
@@ -412,8 +417,8 @@ Result roSessionClose(RoSession* s) {
     // handle: it is closed below in every case. RO cannot remove a view that
     // failed without the handle; that view stays mapped in RO.
     Result last_failure = 0;
-    for (RoJitMapping& entry : s->jit) {
-        if (!entry.alias)
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.owner != s || !entry.alias)
             continue;
         const Result rc = svcUnmapProcessMemory(entry.alias, s->process_handle, entry.destination, entry.size);
         if (R_FAILED(rc))
@@ -447,8 +452,10 @@ Result roSessionClose(RoSession* s) {
         image.base = 0;
         image.mapped = 0;
     }
-    for (RoJitMapping& entry : s->jit)
-        entry = RoJitMapping{};
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.owner == s)
+            entry = RoJitMapping{};
+    }
     return last_failure;
 }
 
