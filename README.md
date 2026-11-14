@@ -24,9 +24,12 @@ homebrew might write to your Switch 2 and brick it forever, so be warned.
 
 ## Starting it
 
-HEN is started from various acquisition tools available for Switch 2. Run a
-native game by holding R. The second launch and onwards will launch into
-hbmenu.
+HEN is started from various acquisition tools available for Switch 2.
+
+For instructions on launching kaiHEN with ns2jb (SmileBASIC), check [here](https://gitlab.com/kurumuz/ns2jb/-/blob/main/README.md).
+
+When kaiHEN is running, run a native game by holding R, close it after the game loads, then launch it while holding R again.
+The second launch and onwards will launch into hbmenu.
 
 ## Developing homebrew
 
