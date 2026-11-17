@@ -66,7 +66,7 @@ docker build --build-arg RELEASE=1 --output out .
 
 writes the release, `out/kaiHEN.zip`: these binaries with nx-hbloader
 (`game/main`), nx-hbmenu (`hbmenu.nro`) and OunceShell
-(`programs/ounceshell.nro`, a file manager with an FTP server),
+(`programs/ounceshell/ounceshell.nro`, a file manager with an FTP server),
 built at the commits that the Dockerfile names, and the licenses of
 everything in it (`licenses/`).
 

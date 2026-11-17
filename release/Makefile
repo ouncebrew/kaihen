@@ -3,7 +3,7 @@
 # Builds the kaiHEN release zip:
 #   bootstrap.bin, hbmenu.nro, ro/main, hen/main,
 #   game/main                    nx-hbloader
-#   programs/ounceshell.nro      OunceShell, the VitaShell port
+#   programs/ounceshell/ounceshell.nro  OunceShell, the VitaShell port
 #   licenses/                    the licenses of everything above
 #
 # The Dockerfile runs this with RELEASE=1 and sets the sources and commits:
@@ -76,13 +76,13 @@ $(OUNCESHELL)/build/switch2/ounceshell.nro:
 $(RELEASE_ZIP): kaihen $(HBLOADER)/build/clean/main \
         $(HBMENU)/build/nro/nro/hbmenu.nro $(OUNCESHELL)/build/switch2/ounceshell.nro
 	rm -rf $(STAGE)
-	mkdir -p $(STAGE)/ro $(STAGE)/hen $(STAGE)/game $(STAGE)/programs
+	mkdir -p $(STAGE)/ro $(STAGE)/hen $(STAGE)/game $(STAGE)/programs/ounceshell
 	cp bootstrap/build/bootstrap.bin $(STAGE)/bootstrap.bin
 	cp $(HBMENU)/build/nro/nro/hbmenu.nro $(STAGE)/hbmenu.nro
 	cp ro/build/main $(STAGE)/ro/main
 	cp hen/build/main $(STAGE)/hen/main
 	cp $(HBLOADER)/build/clean/main $(STAGE)/game/main
-	cp $(OUNCESHELL)/build/switch2/ounceshell.nro $(STAGE)/programs/
+	cp $(OUNCESHELL)/build/switch2/ounceshell.nro $(STAGE)/programs/ounceshell/
 	$(copy_licenses)
 	mkdir -p $(dir $(abspath $@))
 	rm -f $@
