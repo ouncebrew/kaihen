@@ -1,6 +1,6 @@
 # kaiHEN改変
 
-kaiHEN改変 is a homebrew environment and minimal custom firmware for Switch 2.
+kaiHEN改変 is a homebrew environment for Switch 2.
 
 ## Warning
 
