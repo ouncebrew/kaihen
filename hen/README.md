@@ -71,7 +71,13 @@ Loader loads all of its modules (`rtld`, `main`, `subsdk*`, `sdk`) from that
 mount, so the package that HEN swaps in has to be built from the title's
 own ExeFS, with hbloader in place of `rtld`. HEN looks for it at
 `/kaihen/bin/s1/<program ID>.nsp` on the SD card, the program ID as 16
-lowercase hex digits. With that package, an R launch of the game starts
-hbmenu; without it, the game starts normally. HEN does not build these
-packages. A Switch 1 title does not need a saved native policy, so it can
-be the first R launch after a fresh install.
+lowercase hex digits. A title whose own package is absent, or does not open,
+uses `/kaihen/bin/s1/default.nsp` instead. Loader reads the title's own
+`main.npdm` before HEN swaps the package in, so the title's policy (64-bit
+or 32-bit, address space, memory) governs the donor's modules. A default
+built from another 64-bit Switch 1 game is expected to start hbmenu; this
+is not yet tested on hardware. With a package that Loader accepts, an R
+launch of the game starts hbmenu; with one it refuses, the launch ends and
+the game can be started again; with neither, the game starts normally. HEN
+does not build these packages. A Switch 1 title does not need a saved native
+policy, so it can be the first R launch after a fresh install.

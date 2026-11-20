@@ -28,9 +28,11 @@ HEN is started from various acquisition tools available for Switch 2. Run a
 native game by holding R. The second launch and onwards will launch into
 hbmenu.
 
-A Switch 1 game started with R held launches into hbmenu when its own
-donor package is at `/kaihen/bin/s1/<program ID>.nsp` on the SD card (see
-`hen/README.md`), and starts normally otherwise.
+A Switch 1 game started with R held launches into hbmenu when a donor
+package is on the SD card: its own at `/kaihen/bin/s1/<program ID>.nsp`, or
+the shared `/kaihen/bin/s1/default.nsp` built from another Switch 1 game (see
+`hen/README.md`). Without one it starts normally. A Switch 1 game does not
+need a native game to have been launched first.
 
 ## Developing homebrew
 

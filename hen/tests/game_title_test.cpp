@@ -67,6 +67,8 @@ void checkMounts() {
 }
 
 void checkPackagePath() {
+    expect(std::strcmp(Switch1DefaultPackagePath, "@Sdcard:/kaihen/bin/s1/default.nsp") == 0,
+           "default package path");
     const Switch1PackagePath path(0x0100000000100000ull);
     expect(std::strcmp(path.text, "@Sdcard:/kaihen/bin/s1/0100000000100000.nsp") == 0,
            "package path");

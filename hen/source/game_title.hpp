@@ -40,6 +40,13 @@ constexpr bool isGameCodeMount(u64 program_id, u8 content_attributes) {
            (content_attributes == Switch1CodeAttributes && isSwitch1Application(program_id));
 }
 
+/// The donor package used by every Switch 1 title whose own package does not
+/// open. Loader reads the launched title's main.npdm at the first code mount,
+/// before the donor is exchanged in (measured on hardware), so that title's policy governs
+/// the donor's modules. Serving another title is unflown, and a 32-bit title
+/// cannot use a 64-bit donor.
+constexpr char Switch1DefaultPackagePath[] = "@Sdcard:/kaihen/bin/s1/default.nsp";
+
 /// A Switch 1 title's donor package on SD:
 /// "@Sdcard:/kaihen/bin/s1/<program ID, 16 lowercase hex digits>.nsp".
 struct Switch1PackagePath {

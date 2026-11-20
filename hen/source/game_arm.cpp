@@ -503,8 +503,8 @@ Result GameArm::receiveGameMount() {
     // Opening a game without R never parks Loader. Once R arms a request,
     // the selection stays latched through both CodeFS mounts.
     // Loader loads every module of a Switch 1 title from its code FS, so the
-    // title needs a donor built from its own ExeFS. A title without one fails
-    // to open its package below and starts stock.
+    // title needs a donor built from a Switch 1 ExeFS: its own, or else the
+    // shared default donor. A title with neither starts stock.
     const bool switch1 = ounce::game::isSwitch1Application(active_title_);
     if (switch1) {
         // A Switch 1 title never supplies a native policy.
@@ -519,7 +519,15 @@ Result GameArm::receiveGameMount() {
     const char* package_path = switch1 ? switch1_package.text : GamePackagePath;
     package_.emplace(*memory_, filesystem_root_);
     rc = package_->open(package_path, current_mount_);
-    trace_.write(GameTracePoint_PackageOpened, rc);
+    u32 package_kind = 0;
+    if (switch1 && R_FAILED(rc) && !package_->opened()) {
+        // The title's own package did not open and FS made no object. Try the
+        // shared default; PackageOpened value 2 = the default was tried, and
+        // its Result says whether it opened.
+        package_kind = 2;
+        rc = package_->open(ounce::game::Switch1DefaultPackagePath, current_mount_);
+    }
+    trace_.write(GameTracePoint_PackageOpened, rc, package_kind);
     if (R_FAILED(rc)) {
         // No CodeFS exchange was attempted. Once Loader's original wait is
         // restored, the pending title can continue on its stock CodeFS.
@@ -647,8 +655,8 @@ Result GameArm::pollProcessExit() {
 }
 
 Result GameArm::pollSwitch1Refusal() {
-    // Loader refuses a Switch 1 title whose package does not fit it (built
-    // from another version, or without one of its modules) after it closes
+    // Loader refuses a Switch 1 title whose package does not fit it (one
+    // without a module Loader requires: rtld, subsdk0 or sdk) after it closes
     // the code mount, and creates no process. Without this, the launch would
     // stay armed until the title next ran.
     // Loader is no longer parked: it loads the title while this runs and
