@@ -64,3 +64,15 @@ When the player holds R while starting a native game, HEN lets the game's
 process start with the homebrew loader in place of the game. The first such
 launch runs the game normally while HEN saves its signed policy to the SD
 card; later launches start hbloader, which runs hbmenu.
+
+A Switch 1 game, which Switch 2 runs in compatibility mode, keeps its
+Switch 1 program ID, and Loader mounts its code with no content attributes.
+Loader loads all of its modules (`rtld`, `main`, `subsdk*`, `sdk`) from that
+mount, so the package that HEN swaps in has to be built from the title's
+own ExeFS, with hbloader in place of `rtld`. HEN looks for it at
+`/kaihen/bin/s1/<program ID>.nsp` on the SD card, the program ID as 16
+lowercase hex digits. With that package, an R launch of the game starts
+hbmenu; without it, the game starts normally. HEN does not build these
+packages. HEN arms no launch, of either kind, before it has saved a native
+game's policy: until then an R launch runs stock, and only a native game's
+launch saves it.

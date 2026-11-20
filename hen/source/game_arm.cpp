@@ -495,8 +495,15 @@ Result GameArm::receiveGameMount() {
     status_.mounts = 2;
     // Opening a game without R never parks Loader. Once R arms a request,
     // the selection stays latched through both CodeFS mounts.
+    // Loader loads every module of a Switch 1 title from its code FS, so the
+    // title needs a donor built from its own ExeFS. A title without one fails
+    // to open its package below and starts stock.
+    const ounce::game::Switch1PackagePath switch1_package(active_title_);
+    const char* package_path = ounce::game::isSwitch1Application(active_title_)
+                                   ? switch1_package.text
+                                   : GamePackagePath;
     package_.emplace(*memory_, filesystem_root_);
-    rc = package_->open(GamePackagePath, current_mount_);
+    rc = package_->open(package_path, current_mount_);
     trace_.write(GameTracePoint_PackageOpened, rc);
     if (R_FAILED(rc)) {
         // No CodeFS exchange was attempted. Once Loader's original wait is
@@ -526,13 +533,16 @@ Result GameArm::waitForProcess() {
         if (R_FAILED(rc)) {
             return rc;
         }
-        if (!allow_bridge_process_ && !ounce::game::isNativeApplication(title)) {
+        if (!allow_bridge_process_ && !ounce::game::isNativeApplication(title) &&
+            !ounce::game::isSwitch1Application(title)) {
             return UnexpectedState;
         }
         active_title_ = title;
     }
     status_.process_id = pid;
-    if (capture_pending_) {
+    // A Switch 1 title has no policy that the native game package could use:
+    // its launch runs stock and the policy is still owed.
+    if (capture_pending_ && ounce::game::isNativeApplication(active_title_)) {
         state_ = State::CapturePolicy;
         return 0;
     }
