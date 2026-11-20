@@ -61,6 +61,8 @@ class GameArm {
     Result waitForProcess();
     Result capturePolicy();
     Result pollProcessExit();
+    Result pollSwitch1Refusal();
+    void endLaunch();
     Result restoreGate(Result result, State on_success = State::WaitProcess);
     void resumeAfterRestore(State target);
     Result inspectGameRequest(const u8 request[ounce::LoaderRequestSize], bool& game_mount,
@@ -107,6 +109,10 @@ class GameArm {
     bool capture_pending_ = false;
     u32 capture_attempts_ = 0;
     u64 capture_next_tick_ = 0;
+    /// When an armed Switch 1 launch was first seen without its code mount.
+    u64 code_closed_tick_ = 0;
+    /// When pollSwitch1Refusal next looks for that code mount.
+    u64 refusal_next_tick_ = 0;
     Result recovery_primary_result_ = 0;
     State recovery_target_ = State::Fault;
     Result last_restore_result_ = 0;

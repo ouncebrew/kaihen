@@ -27,6 +27,12 @@ constexpr u32 CaptureAttempts = 20;
 constexpr u64 CaptureIntervalNs = 1000000000;
 /// How long sampleR waits for each controller to post a new sample.
 constexpr u64 InputSampleIntervalNs = 50000000;
+/// How long an armed Switch 1 launch may have no process once Loader has
+/// closed its code mount.
+constexpr u64 Switch1ProcessTimeoutNs = 5000000000;
+/// How often an armed Switch 1 launch without a process looks for its code
+/// mount in Loader's domain.
+constexpr u64 Switch1RefusalPollNs = 100000000;
 
 /// The value of a fault trace: the trace point that preceded the fault in the
 /// high half, and that point's value (or the gate step that failed) in the low.
@@ -258,6 +264,8 @@ Result GameArm::openPackage() {
     active_title_ = 0;
     active_storage_ = 0;
     capture_pending_ = false;
+    code_closed_tick_ = 0;
+    refusal_next_tick_ = 0;
     gate_failure_step_ = 0;
     step_started_ = false;
     before_step_count_ = 0;
@@ -519,7 +527,9 @@ Result GameArm::waitForProcess() {
     Result rc = active_title_ ? pmdmntGetProcessId(&pid, active_title_)
                               : pmdmntGetApplicationProcessId(&pid);
     if (rc == ProcessNotFound) {
-        return 0;
+        return status_.mounts == 2 && ounce::game::isSwitch1Application(active_title_)
+                   ? pollSwitch1Refusal()
+                   : 0;
     }
     if (R_FAILED(rc) || !pid) {
         return R_FAILED(rc) ? rc : UnexpectedState;
@@ -621,6 +631,36 @@ Result GameArm::pollProcessExit() {
         R_TRY(final_mount.snapshot(entries, count));
         if (containsEntry(entries, count, code_.address)) return 0;
     }
+    endLaunch();
+    return 0;
+}
+
+Result GameArm::pollSwitch1Refusal() {
+    // Loader refuses a Switch 1 title whose package does not fit it (built
+    // from another version, or without one of its modules) after it closes
+    // the code mount, and creates no process. Without this, the launch would
+    // stay armed until the title next ran.
+    // Loader is no longer parked: it loads the title while this runs and
+    // changes its domain under the walk. A snapshot that fails proves
+    // nothing, so it neither ends the launch nor faults game arming.
+    const u64 now = armGetSystemTick();
+    if (refusal_next_tick_ && now < refusal_next_tick_) return 0;
+    refusal_next_tick_ = now + armNsToTicks(Switch1RefusalPollNs);
+    ounce::DomainEntry entries[ounce::MaxDomainEntries];
+    u32 count = 0;
+    GameMount final_mount(*memory_, mount_config_);
+    if (R_FAILED(final_mount.snapshot(entries, count)) ||
+        containsEntry(entries, count, code_.address)) {
+        code_closed_tick_ = 0;
+        return 0;
+    }
+    if (!code_closed_tick_) code_closed_tick_ = now;
+    if (armTicksToNs(now - code_closed_tick_) < Switch1ProcessTimeoutNs) return 0;
+    endLaunch();
+    return 0;
+}
+
+void GameArm::endLaunch() {
     if (package_) package_->close();
     package_.reset();
     mount_.reset();
@@ -628,7 +668,6 @@ Result GameArm::pollProcessExit() {
     allow_bridge_process_ = false;
     status_.serial++;
     state_ = State::OpenPackage;
-    return 0;
 }
 
 Result GameArm::restoreGate(Result result, State on_success) {
