@@ -69,6 +69,14 @@ void checkMounts() {
 void checkPackagePath() {
     expect(std::strcmp(Switch1DefaultPackagePath, "@Sdcard:/kaihen/bin/s1/default.nsp") == 0,
            "default package path");
+    expect(std::strcmp(Switch1DefaultPackagePath + sizeof("@Sdcard:") - 1,
+                       Switch1DefaultDonorFile) == 0,
+           "default donor file is the default package");
+    expect(std::strncmp(Switch1DefaultDonorPart, Switch1DefaultDonorFile,
+                        sizeof(Switch1DefaultDonorFile) - 1) == 0 &&
+               std::strcmp(Switch1DefaultDonorPart + sizeof(Switch1DefaultDonorFile) - 1,
+                           ".part") == 0,
+           "default donor part file");
     const Switch1PackagePath path(0x0100000000100000ull);
     expect(std::strcmp(path.text, "@Sdcard:/kaihen/bin/s1/0100000000100000.nsp") == 0,
            "package path");

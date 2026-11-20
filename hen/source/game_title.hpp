@@ -46,6 +46,10 @@ constexpr bool isGameCodeMount(u64 program_id, u8 content_attributes) {
 /// the donor's modules. Serving another title is unflown, and a 32-bit title
 /// cannot use a 64-bit donor.
 constexpr char Switch1DefaultPackagePath[] = "@Sdcard:/kaihen/bin/s1/default.nsp";
+/// The same donor as a path on the SD card's own file system, and the file
+/// that HEN builds it in (donor_build.hpp) before giving it this name.
+constexpr char Switch1DefaultDonorFile[] = "/kaihen/bin/s1/default.nsp";
+constexpr char Switch1DefaultDonorPart[] = "/kaihen/bin/s1/default.nsp.part";
 
 /// A Switch 1 title's donor package on SD:
 /// "@Sdcard:/kaihen/bin/s1/<program ID, 16 lowercase hex digits>.nsp".

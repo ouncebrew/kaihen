@@ -209,6 +209,9 @@ void GameArm::step() {
     case State::CapturePolicy:
         rc = capturePolicy();
         break;
+    case State::BuildDonor:
+        rc = buildDonor();
+        break;
     case State::WaitExit:
         rc = pollProcessExit();
         break;
@@ -264,6 +267,7 @@ Result GameArm::openPackage() {
     active_title_ = 0;
     active_storage_ = 0;
     capture_pending_ = false;
+    donor_build_pending_ = false;
     code_closed_tick_ = 0;
     refusal_next_tick_ = 0;
     gate_failure_step_ = 0;
@@ -528,6 +532,11 @@ Result GameArm::receiveGameMount() {
         rc = package_->open(ounce::game::Switch1DefaultPackagePath, current_mount_);
     }
     trace_.write(GameTracePoint_PackageOpened, rc, package_kind);
+    if (package_kind == 2 && R_FAILED(rc) && !package_->opened() && !donor_build_tried_) {
+        // Neither donor opened: once the title runs stock, build the default
+        // from its ExeFS for the next Switch 1 launch.
+        donor_build_pending_ = true;
+    }
     if (R_FAILED(rc)) {
         // No CodeFS exchange was attempted. Once Loader's original wait is
         // restored, the pending title can continue on its stock CodeFS.
@@ -565,6 +574,12 @@ Result GameArm::waitForProcess() {
         active_title_ = title;
     }
     status_.process_id = pid;
+    if (donor_build_pending_ && ounce::game::isSwitch1Application(active_title_)) {
+        donor_build_pending_ = false;
+        status_.phase = HenGamePhase_WaitingForExit;
+        state_ = State::BuildDonor;
+        return 0;
+    }
     // Only a native title's CodeFS holds a policy the native game package can
     // use. A Switch 1 launch cleared capture_pending_ at its second code mount;
     // one that reaches here with it set (a park or step failure) captures nothing.
@@ -628,6 +643,56 @@ Result GameArm::capturePolicy() {
         state_ = State::WaitExit;
     }
     return 0;
+}
+
+Result GameArm::buildDonor() {
+    // The title must still run: its exit, or another program in its
+    // process, abandons the build before any other step.
+    u64 program_id = 0;
+    Result rc = pmdmntGetProgramId(&program_id, status_.process_id);
+    if (rc == ProcessNotFound || R_FAILED(rc) || program_id != active_title_) {
+        if (donor_build_) donor_build_->abandon();
+        trace_.write(GameTracePoint_DonorBuildFailed, rc,
+                     donor_build_ ? donor_build_->trace() : 0);
+        endDonorBuild();
+        if (rc == ProcessNotFound) return 0;
+        return R_FAILED(rc) ? rc : UnexpectedState;
+    }
+
+    if (!donor_build_) {
+        donor_build_.emplace();
+        rc = donor_build_->begin(loader_root_, filesystem_root_, active_title_,
+                                 active_storage_, GameMainPath);
+        trace_.write(GameTracePoint_DonorBuildStarted, rc,
+                     R_SUCCEEDED(rc) ? donor_build_->count() : donor_build_->trace());
+        // A begin() that fails (32-bit, no hbloader, default.nsp present, SD
+        // create/write) has deleted its part file; it leaves the attempt for a
+        // later title.
+        if (R_FAILED(rc)) {
+            endDonorBuild();
+            return 0;
+        }
+        donor_build_tried_ = true;
+        return 0;
+    }
+
+    bool complete = false;
+    rc = donor_build_->step(complete);
+    if (complete) {
+        trace_.write(GameTracePoint_DonorBuilt, rc, donor_build_->count());
+        endDonorBuild();
+    } else if (R_FAILED(rc)) {
+        trace_.write(GameTracePoint_DonorBuildFailed, rc, donor_build_->trace());
+        endDonorBuild();
+    }
+    return 0;
+}
+
+void GameArm::endDonorBuild() {
+    // Destroying the build closes its files and deletes its part file.
+    donor_build_.reset();
+    status_.phase = HenGamePhase_WaitingForExit;
+    state_ = State::WaitExit;
 }
 
 Result GameArm::pollProcessExit() {

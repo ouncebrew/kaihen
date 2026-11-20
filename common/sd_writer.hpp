@@ -3,6 +3,12 @@
 
 #include <switch.h>
 
+// Open the SD card on the caller's initialized FS root, which stays open.
+Result openSdCardFileSystem(Handle root, FsFileSystem* out);
+
+// Create every missing directory above an absolute path on the SD card.
+Result createSdParents(FsFileSystem* filesystem, const char* path);
+
 // One SD file replacement owned by the PC upload connection. The caller
 // supplies an already-initialized FS root; the writer never reinitializes it.
 class SdWriter {

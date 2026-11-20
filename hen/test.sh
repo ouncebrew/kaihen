@@ -15,3 +15,5 @@ $cxx $flags -I"$nx/include" -I../libkaihen/include tests/sm_request_test.cpp -o 
 build/tests/sm_request
 $cxx $flags -I"$nx/include" tests/game_title_test.cpp -o build/tests/game_title
 build/tests/game_title
+$cxx $flags -I"$nx/include" tests/donor_layout_test.cpp -o build/tests/donor_layout
+build/tests/donor_layout

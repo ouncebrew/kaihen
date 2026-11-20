@@ -7,6 +7,7 @@
 #include "../../common/package.hpp"
 #include "../../common/loader_gate.hpp"
 #include "game_trace.hpp"
+#include "donor_build.hpp"
 
 using GameMemory = ounce::RetainedMemory<ounce::MemoryWriter::RoProcess>;
 using GameGate = ounce::LoaderGate<ounce::MemoryWriter::RoProcess>;
@@ -49,6 +50,7 @@ class GameArm {
         WaitRequest,
         WaitProcess,
         CapturePolicy,
+        BuildDonor,
         WaitExit,
         RecoveringGate,
         Fault,
@@ -60,6 +62,8 @@ class GameArm {
     Result receiveGameMount();
     Result waitForProcess();
     Result capturePolicy();
+    Result buildDonor();
+    void endDonorBuild();
     Result pollProcessExit();
     Result pollSwitch1Refusal();
     void endLaunch();
@@ -109,6 +113,13 @@ class GameArm {
     bool capture_pending_ = false;
     u32 capture_attempts_ = 0;
     u64 capture_next_tick_ = 0;
+    /// This Switch 1 launch opened no donor, so its running process is to
+    /// build the shared default donor.
+    bool donor_build_pending_ = false;
+    /// A default donor build has started in this HEN session; there is never
+    /// a second one.
+    bool donor_build_tried_ = false;
+    std::optional<Switch1DonorBuild> donor_build_;
     /// When an armed Switch 1 launch was first seen without its code mount.
     u64 code_closed_tick_ = 0;
     /// When pollSwitch1Refusal next looks for that code mount.
