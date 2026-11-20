@@ -73,6 +73,5 @@ own ExeFS, with hbloader in place of `rtld`. HEN looks for it at
 `/kaihen/bin/s1/<program ID>.nsp` on the SD card, the program ID as 16
 lowercase hex digits. With that package, an R launch of the game starts
 hbmenu; without it, the game starts normally. HEN does not build these
-packages. HEN arms no launch, of either kind, before it has saved a native
-game's policy: until then an R launch runs stock, and only a native game's
-launch saves it.
+packages. A Switch 1 title does not need a saved native policy, so it can
+be the first R launch after a fresh install.

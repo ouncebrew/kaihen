@@ -297,15 +297,14 @@ Result GameArm::waitForInput() {
     }
 
     if (!policy_ready_) {
-        // The first R launch stays stock. PM identifies the running title,
-        // then its live CodeFS supplies the signed policy for later launches.
+        // No native policy is saved yet. The launch is still armed: a Switch 1
+        // title's donor carries its own policy, and a native title is let
+        // through stock at its second code mount so that its live CodeFS can
+        // supply the policy for later launches.
         capture_pending_ = true;
         capture_attempts_ = 0;
         capture_next_tick_ = 0;
-        trace_.write(GameTracePoint_FirstLaunchCapture);
-        state_ = State::WaitProcess;
-        status_.phase = HenGamePhase_WaitingForProcess;
-        return 0;
+        trace_.write(GameTracePoint_FirstLaunchCapture, 0, 1);
     }
     state_ = State::ParkGate;
     status_.phase = HenGamePhase_Parking;
@@ -506,10 +505,18 @@ Result GameArm::receiveGameMount() {
     // Loader loads every module of a Switch 1 title from its code FS, so the
     // title needs a donor built from its own ExeFS. A title without one fails
     // to open its package below and starts stock.
+    const bool switch1 = ounce::game::isSwitch1Application(active_title_);
+    if (switch1) {
+        // A Switch 1 title never supplies a native policy.
+        capture_pending_ = false;
+    } else if (!policy_ready_) {
+        // The native game package needs the policy this launch is to supply.
+        // No CodeFS exchange is attempted; the title continues stock.
+        trace_.write(GameTracePoint_FirstLaunchCapture, 0, 2);
+        return restoreGate(0, State::WaitProcess);
+    }
     const ounce::game::Switch1PackagePath switch1_package(active_title_);
-    const char* package_path = ounce::game::isSwitch1Application(active_title_)
-                                   ? switch1_package.text
-                                   : GamePackagePath;
+    const char* package_path = switch1 ? switch1_package.text : GamePackagePath;
     package_.emplace(*memory_, filesystem_root_);
     rc = package_->open(package_path, current_mount_);
     trace_.write(GameTracePoint_PackageOpened, rc);
@@ -550,8 +557,9 @@ Result GameArm::waitForProcess() {
         active_title_ = title;
     }
     status_.process_id = pid;
-    // A Switch 1 title has no policy that the native game package could use:
-    // its launch runs stock and the policy is still owed.
+    // Only a native title's CodeFS holds a policy the native game package can
+    // use. A Switch 1 launch cleared capture_pending_ at its second code mount;
+    // one that reaches here with it set (a park or step failure) captures nothing.
     if (capture_pending_ && ounce::game::isNativeApplication(active_title_)) {
         state_ = State::CapturePolicy;
         return 0;
@@ -580,8 +588,8 @@ Result GameArm::capturePolicy() {
 
     SignedPolicy policy = {};
     // The live game's CodeFS may reside on a game card, built-in user
-    // storage, or SD. The first launch remains stock, so its Loader request
-    // does not pass through our mount observer to supply the storage ID.
+    // storage, or SD. Each is tried: a launch that fell back before its first
+    // code mount (a park or early step failure) has no observed storage ID.
     const u8 storages[] = {
         NcmStorageId_BuiltInUser,
         NcmStorageId_SdCard,
@@ -624,6 +632,9 @@ Result GameArm::pollProcessExit() {
         return rc;
     }
 
+    // capture_pending_ implies no CodeFS exchange: it is set only without a
+    // policy, a native title then skips the exchange (receiveGameMount), and a
+    // Switch 1 title clears it before its exchange.
     if (!capture_pending_) {
         ounce::DomainEntry entries[ounce::MaxDomainEntries];
         u32 count = 0;
