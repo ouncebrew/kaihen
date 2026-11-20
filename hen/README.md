@@ -64,3 +64,27 @@ When the player holds R while starting a native game, HEN lets the game's
 process start with the homebrew loader in place of the game. The first such
 launch runs the game normally while HEN saves its signed policy to the SD
 card; later launches start hbloader, which runs hbmenu.
+
+A Switch 1 game, which Switch 2 runs in compatibility mode, keeps its
+Switch 1 program ID, and Loader mounts its code with no content attributes.
+Loader loads all of its modules (`rtld`, `main`, `subsdk*`, `sdk`) from that
+mount, so the package that HEN swaps in has to be built from the title's
+own ExeFS, with hbloader in place of `rtld`. HEN looks for it at
+`/kaihen/bin/s1/<program ID>.nsp` on the SD card, the program ID as 16
+lowercase hex digits. A title whose own package is absent, or does not open,
+uses `/kaihen/bin/s1/default.nsp` instead. Loader reads the title's own
+`main.npdm` before HEN swaps the package in, so the title's policy (64-bit
+or 32-bit, address space, memory) governs the donor's modules. A default
+built from another 64-bit Switch 1 game has started hbmenu from other
+Switch 1 games in testing; a 32-bit game is not expected to work with it. With a package that Loader accepts, an R
+launch of the game starts hbmenu; with one it refuses, the launch ends and
+the game can be started again; with neither, the game starts normally, and
+while it runs HEN builds `default.nsp` from that game's ExeFS and hbloader
+(`/kaihen/bin/game/main`), so that the next R launch of that game, and of
+other 64-bit Switch 1 games, starts hbmenu. HEN writes it as
+`default.nsp.part` and renames it only once it is complete. A 32-bit
+game, or any build refused before copying starts, leaves the build to a
+later game; a game that exits during the copy, or a copy that fails, leaves
+no `default.nsp` and uses up that HEN session's one build. HEN does not
+build the per-title packages. A Switch 1 title does not need a saved native
+policy, so it can be the first R launch after a fresh install.
