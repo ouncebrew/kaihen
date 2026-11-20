@@ -2,6 +2,7 @@
 #include <cstring>
 #include <switch.h>
 #include "game_arm.hpp"
+#include "game_title.hpp"
 #include "../../common/package.hpp"
 #include "../../common/result.hpp"
 #include "../../libkaihen/source/cmif_server.hpp"
@@ -15,14 +16,6 @@ constexpr Result UnexpectedState = MAKERESULT(Module_Libnx, LibnxError_BadInput)
 constexpr Result ProcessNotFound = MAKERESULT(15, 1);
 /// FS's result for a path that does not exist.
 constexpr Result PathNotFound = MAKERESULT(2, 1);
-/// The content attributes of the game's code file system, in Loader's
-/// OpenCodeFileSystem request and in readSignedPolicy.
-constexpr u32 GameAttributes = 1;
-// Native titles observed here use the 0x04 namespace. This is the Switch 2
-// analogue of Atmosphere's ncm::IsApplicationId range check; the exact native
-// endpoints still need live qualification against more than one game title.
-constexpr u64 ApplicationProgramIdMin = 0x0400000000010000ull;
-constexpr u64 ApplicationProgramIdMax = 0x04ffffffffffffffull;
 constexpr u32 NativeNpadRevision = 5;
 constexpr char GamePackagePath[] = "@Sdcard:/kaihen/bin/game/exefs.nsp";
 constexpr char GameMainPath[] = "/kaihen/bin/game/main";
@@ -34,10 +27,6 @@ constexpr u32 CaptureAttempts = 20;
 constexpr u64 CaptureIntervalNs = 1000000000;
 /// How long sampleR waits for each controller to post a new sample.
 constexpr u64 InputSampleIntervalNs = 50000000;
-
-bool isApplicationProgram(u64 program_id) {
-    return program_id >= ApplicationProgramIdMin && program_id <= ApplicationProgramIdMax;
-}
 
 /// The value of a fault trace: the trace point that preceded the fault in the
 /// high half, and that point's value (or the gate step that failed) in the low.
@@ -341,8 +330,8 @@ Result GameArm::inspectGameRequest(const u8 request[ounce::LoaderRequestSize],
     // Any application from any storage: the R selection decides which launch
     // is armed, not the title.
     const ounce::CodeMountArguments& arguments = decoded.arguments;
-    if (!decoded.open_code || arguments.content_attributes != GameAttributes ||
-        !isApplicationProgram(arguments.program_id)) {
+    if (!decoded.open_code ||
+        !ounce::game::isGameCodeMount(arguments.program_id, arguments.content_attributes)) {
         return 0;
     }
     title = arguments.program_id;
@@ -537,7 +526,7 @@ Result GameArm::waitForProcess() {
         if (R_FAILED(rc)) {
             return rc;
         }
-        if (!allow_bridge_process_ && !isApplicationProgram(title)) {
+        if (!allow_bridge_process_ && !ounce::game::isNativeApplication(title)) {
             return UnexpectedState;
         }
         active_title_ = title;
@@ -579,7 +568,8 @@ Result GameArm::capturePolicy() {
         NcmStorageId_GameCard,
     };
     for (u8 storage : storages) {
-        rc = readSignedPolicy(loader_root_, active_title_, storage, GameAttributes, &policy);
+        rc = readSignedPolicy(loader_root_, active_title_, storage,
+                              ounce::game::NativeCodeAttributes, &policy);
         if (R_SUCCEEDED(rc)) {
             rc = writeExeFsPackage(filesystem_root_, GameMainPath, GamePackageFile, policy);
             if (R_SUCCEEDED(rc)) {
