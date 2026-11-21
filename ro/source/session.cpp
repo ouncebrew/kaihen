@@ -18,6 +18,9 @@ constexpr u64 PageMask = 0xfff;
 
 RoDiagnostics g_ro_diagnostics = {};
 
+/// The JIT mappings of every client context.
+RoJitMapping g_jit[RoMaxJit] = {};
+
 /// What a command returns besides its result. Each part is sent only when
 /// the command succeeds.
 struct CommandReply {
@@ -151,16 +154,24 @@ Result unloadNro(RoSession* s, u64 base) {
 //-----------------------------------------------------------------------------
 
 RoJitMapping* findJitMapping(RoSession* s, u64 destination, u64 size) {
-    for (RoJitMapping& entry : s->jit) {
-        if (entry.size && entry.destination == destination && entry.size == size)
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.size && entry.owner == s && entry.destination == destination && entry.size == size)
             return &entry;
     }
     return nullptr;
 }
 
 RoJitMapping* findJitAlias(RoSession* s, u64 destination) {
-    for (RoJitMapping& entry : s->jit) {
-        if (entry.destination == destination && entry.alias)
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.owner == s && entry.destination == destination && entry.alias)
+            return &entry;
+    }
+    return nullptr;
+}
+
+RoJitMapping* findFreeJitMapping() {
+    for (RoJitMapping& entry : g_jit) {
+        if (!entry.size)
             return &entry;
     }
     return nullptr;
@@ -172,13 +183,7 @@ Result mapJitCode(RoSession* s, u64 destination, u64 source, u64 size) {
     if (!isPageRange(destination, size) || !isPageRange(source, size))
         return RoResult_BadRequest;
 
-    RoJitMapping* entry = nullptr;
-    for (RoJitMapping& candidate : s->jit) {
-        if (!candidate.size) {
-            entry = &candidate;
-            break;
-        }
-    }
+    RoJitMapping* entry = findFreeJitMapping();
     if (!entry)
         return RoResult_OutOfAddressSpace;
 
@@ -191,7 +196,7 @@ Result mapJitCode(RoSession* s, u64 destination, u64 source, u64 size) {
         return rc;
     }
 
-    *entry = RoJitMapping{destination, source, size, nullptr};
+    *entry = RoJitMapping{s, destination, source, size, nullptr};
     return 0;
 }
 
@@ -298,7 +303,77 @@ Result unmapJitEntry(RoSession* s, RoJitMapping* entry) {
     return rc;
 }
 
-/// Unmaps a mapping that mapJitCode made, so the request cannot unmap an NRO.
+bool isImagePermission(u32 permission) {
+    return permission == Perm_R || permission == Perm_Rw || permission == Perm_Rx;
+}
+
+/// Whether the ranges of an image are page-aligned, in ascending order
+/// within the image, and each has a permission that an image may use.
+bool checkImageRanges(const KaihenJitImageRange* ranges, u64 count, u64 size) {
+    u64 end = 0;
+    for (u64 i = 0; i < count; i++) {
+        const KaihenJitImageRange range = ranges[i];
+        if (!range.size || ((range.offset | range.size) & PageMask) || range.offset < end ||
+            range.offset > size || range.size > size - range.offset ||
+            !isImagePermission(range.permission))
+            return false;
+        end = range.offset + range.size;
+    }
+    return true;
+}
+
+/// Sets each range's permission, and R on the pages that no range covers.
+Result setImagePermissions(Handle process, u64 destination, u64 size,
+                           const KaihenJitImageRange* ranges, u64 count) {
+    u64 cursor = 0;
+    Result rc = 0;
+    for (u64 i = 0; R_SUCCEEDED(rc) && i < count; i++) {
+        const KaihenJitImageRange range = ranges[i];
+        if (range.offset > cursor)
+            rc = svcSetProcessMemoryPermission(process, destination + cursor, range.offset - cursor, Perm_R);
+        if (R_SUCCEEDED(rc))
+            rc = svcSetProcessMemoryPermission(process, destination + range.offset, range.size,
+                                               range.permission);
+        cursor = range.offset + range.size;
+    }
+    if (R_SUCCEEDED(rc) && size > cursor)
+        rc = svcSetProcessMemoryPermission(process, destination + cursor, size - cursor, Perm_R);
+    return rc;
+}
+
+/// Maps the process's own pages at @p source to @p destination as one image,
+/// with the permissions of the request's ranges, as roMapImage sets an NRO's
+/// segments. A failure unmaps the image; when that also fails, the entry
+/// keeps it for ReleaseJitCode.
+Result mapJitImage(RoSession* s, u64 destination, u64 source, u64 size, u64 count,
+                   const RoRequest& request) {
+    if (!isPageRange(destination, size) || !isPageRange(source, size) || !request.ranges || !count ||
+        count > request.ranges_size / sizeof(KaihenJitImageRange) ||
+        request.ranges_size != count * sizeof(KaihenJitImageRange))
+        return RoResult_BadRequest;
+    const auto* ranges = static_cast<const KaihenJitImageRange*>(request.ranges);
+    if (!checkImageRanges(ranges, count, size))
+        return RoResult_BadRequest;
+
+    RoJitMapping* entry = findFreeJitMapping();
+    if (!entry)
+        return RoResult_OutOfAddressSpace;
+
+    Result rc = svcMapProcessCodeMemory(s->process_handle, destination, source, size);
+    if (R_FAILED(rc))
+        return rc;
+    *entry = RoJitMapping{s, destination, source, size, nullptr};
+
+    rc = setImagePermissions(s->process_handle, destination, size, ranges, count);
+    if (R_FAILED(rc)) {
+        const Result unmap_rc = unmapJitEntry(s, entry);
+        return R_FAILED(unmap_rc) ? unmap_rc : rc;
+    }
+    return 0;
+}
+
+/// Unmaps a mapping that mapJitCode or mapJitImage made, so the request
+/// cannot unmap an NRO.
 Result unmapJitCode(RoSession* s, u64 destination, u64 source, u64 size) {
     RoJitMapping* entry = findJitMapping(s, destination, size);
     if (!entry || entry->source != source)
@@ -312,8 +387,8 @@ Result unmapJitCode(RoSession* s, u64 destination, u64 source, u64 size) {
 Result releaseJitCode(RoSession* s, CommandReply* reply) {
     Result last_failure = 0;
     u64 count = 0;
-    for (RoJitMapping& entry : s->jit) {
-        if (!entry.size)
+    for (RoJitMapping& entry : g_jit) {
+        if (!entry.size || entry.owner != s)
             continue;
         const Result rc = unmapJitEntry(s, &entry);
         if (R_SUCCEEDED(rc))
@@ -356,6 +431,8 @@ Result runClientCommand(RoSession* s, const RoRequest& request, CommandReply* re
         return publishJitAlias(s, args[0], args[1], args[2], request);
     case RoCmd_PublishJitRanges:
         return publishJitRanges(s, args[0], args[1], request);
+    case RoCmd_MapJitImage:
+        return mapJitImage(s, args[0], args[1], args[2], args[3], request);
     default:
         return RoResult_BadRequest;
     }
@@ -412,8 +489,8 @@ Result roSessionClose(RoSession* s) {
     // handle: it is closed below in every case. RO cannot remove a view that
     // failed without the handle; that view stays mapped in RO.
     Result last_failure = 0;
-    for (RoJitMapping& entry : s->jit) {
-        if (!entry.alias)
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.owner != s || !entry.alias)
             continue;
         const Result rc = svcUnmapProcessMemory(entry.alias, s->process_handle, entry.destination, entry.size);
         if (R_FAILED(rc))
@@ -447,8 +524,10 @@ Result roSessionClose(RoSession* s) {
         image.base = 0;
         image.mapped = 0;
     }
-    for (RoJitMapping& entry : s->jit)
-        entry = RoJitMapping{};
+    for (RoJitMapping& entry : g_jit) {
+        if (entry.owner == s)
+            entry = RoJitMapping{};
+    }
     return last_failure;
 }
 

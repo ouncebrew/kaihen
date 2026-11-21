@@ -36,6 +36,9 @@ bool getCommandShape(u32 cmd_id, CommandShape* out) {
     case RoCmd_LoadNro:
         *out = {40, 0, 0};
         return true;
+    case RoCmd_MapJitImage:
+        *out = {40, 0, 1};
+        return true;
     case RoCmd_MapJitCode:
     case RoCmd_UnmapJitCode:
         *out = {32, 0, 0};
@@ -137,10 +140,14 @@ bool roParseRequest(const void* base, RoRequest* out) {
     request.pid = r.pid;
     request.process = shape.num_copy_handles ? r.data.copy_handles[0] : 0;
 
-    // PublishJitAlias sends its bytes; PublishJitRanges sends the ranges, then the bytes.
+    // PublishJitAlias sends its bytes; PublishJitRanges sends the ranges, then
+    // the bytes; MapJitImage sends its ranges.
     if (header->command_id == RoCmd_PublishJitAlias) {
         request.input = sendBufferAddress(r, 0);
         request.input_size = sendBufferSize(r, 0);
+    } else if (header->command_id == RoCmd_MapJitImage) {
+        request.ranges = sendBufferAddress(r, 0);
+        request.ranges_size = sendBufferSize(r, 0);
     } else if (header->command_id == RoCmd_PublishJitRanges) {
         request.ranges = sendBufferAddress(r, 0);
         request.ranges_size = sendBufferSize(r, 0);

@@ -9,7 +9,9 @@
 
 constexpr u32 RoMaxNrr = 8;
 constexpr u32 RoMaxNro = 8;
-constexpr u32 RoMaxJit = 512;
+/// The JIT mappings that RO records for all its client contexts together.
+/// Only homebrew sends the JIT commands, so the contexts share one table.
+constexpr u32 RoMaxJit = 4096;
 
 /// What RO has mapped for a loaded image, in RoLoadedImage::mapped.
 enum RoImageState : u32 {
@@ -39,8 +41,11 @@ struct RoLoadedImage {
     u32 mapped; ///< RoImageState bits.
 };
 
-/// Generated code that RO mapped executable for its process (the JIT commands).
+struct RoSession;
+
+/// Generated code that RO mapped executable for a client (the JIT commands).
 struct RoJitMapping {
+    const RoSession* owner;
     u64 destination;
     u64 source;
     u64 size;    ///< Zero for a free entry.
@@ -55,7 +60,6 @@ struct RoSession {
     u64 nrr_source[RoMaxNrr];
     u64 nrr_size[RoMaxNrr];
     RoLoadedImage nro[RoMaxNro];
-    RoJitMapping jit[RoMaxJit];
 };
 
 /**

@@ -24,6 +24,7 @@ enum RoCmd : u32 {
     RoCmd_MapJitAlias = KaihenRoCommand_MapJitAlias,
     RoCmd_PublishJitAlias = KaihenRoCommand_PublishJitAlias,
     RoCmd_PublishJitRanges = KaihenRoCommand_PublishJitRanges,
+    RoCmd_MapJitImage = KaihenRoCommand_MapJitImage,
 };
 
 /// A decoded ldr:ro request.
@@ -35,7 +36,7 @@ struct RoRequest {
     u64 args[4];        ///< Arguments after the PID placeholder.
     const void* input;  ///< Send buffer of PublishJitAlias and PublishJitRanges, else null.
     u64 input_size;
-    const void* ranges; ///< Range buffer of PublishJitRanges, else null.
+    const void* ranges; ///< Range buffer of PublishJitRanges and MapJitImage, else null.
     u64 ranges_size;
 };
 

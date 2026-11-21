@@ -92,6 +92,52 @@ Result kaihenJitPublishRanges(Jit* code, const KaihenJitRange* ranges, size_t co
 }
 #endif
 
+/**
+ * @brief Maps an image whose code and data must stay together, such as a
+ *        position-independent ELF, as one RO mapping.
+ * @param destination Free address in the process, from virtmemFindCodeMemory.
+ * @param source Page-aligned heap pages that hold the image. They are not
+ *        accessible until kaihenUnmapJitImage.
+ * @param ranges Pages of the image and their permissions, in ascending
+ *        order. The pages that no range covers are R.
+ * @note Clean the source's data cache before, and invalidate the code's
+ *       instruction cache after.
+ */
+NX_INLINE Result kaihenMapJitImage(void* destination, void* source, size_t size,
+                                   const KaihenJitImageRange* ranges, size_t count) {
+    Service ro;
+    Result rc = kaihenGetRoSession(&ro);
+    if (R_FAILED(rc))
+        return rc;
+    const struct {
+        u64 pid_placeholder;
+        u64 destination;
+        u64 source;
+        u64 size;
+        u64 count;
+    } in = {0, (u64)destination, (u64)source, size, count};
+    return serviceDispatchIn(&ro, KaihenRoCommand_MapJitImage, in,
+                             .buffer_attrs = {SfBufferAttr_HipcMapAlias | SfBufferAttr_In},
+                             .buffers = {{ranges, count * sizeof(*ranges)}},
+                             .in_send_pid = true);
+}
+
+/// Unmaps an image that kaihenMapJitImage mapped. The source pages are the
+/// caller's heap again.
+NX_INLINE Result kaihenUnmapJitImage(void* destination, void* source, size_t size) {
+    Service ro;
+    Result rc = kaihenGetRoSession(&ro);
+    if (R_FAILED(rc))
+        return rc;
+    const struct {
+        u64 pid_placeholder;
+        u64 destination;
+        u64 source;
+        u64 size;
+    } in = {0, (u64)destination, (u64)source, size};
+    return serviceDispatchIn(&ro, KaihenRoCommand_UnmapJitCode, in, .in_send_pid = true);
+}
+
 /// Opens a new HEN homebrew session through RO. The caller owns *out and
 /// closes it with serviceClose.
 NX_INLINE Result kaihenOpenHomebrewSession(Service* ro, Service* out) {
