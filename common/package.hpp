@@ -56,6 +56,10 @@ class NativePackage {
         return 0;
     }
 
+    /// Whether FS opened the package. A failed open() that leaves this false
+    /// changed nothing and may be retried with another path.
+    bool opened() const { return opened_; }
+
     void close() {
         if (opened_) {
             fsFsClose(&filesystem_);
