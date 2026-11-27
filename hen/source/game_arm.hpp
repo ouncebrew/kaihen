@@ -8,6 +8,7 @@
 #include "../../common/loader_gate.hpp"
 #include "game_trace.hpp"
 #include "donor_build.hpp"
+#include "switch1_refusal.hpp"
 
 using GameMemory = ounce::RetainedMemory<ounce::MemoryWriter::RoProcess>;
 using GameGate = ounce::LoaderGate<ounce::MemoryWriter::RoProcess>;
@@ -120,8 +121,8 @@ class GameArm {
     /// a second one.
     bool donor_build_tried_ = false;
     std::optional<Switch1DonorBuild> donor_build_;
-    /// When an armed Switch 1 launch was first seen without its code mount.
-    u64 code_closed_tick_ = 0;
+    /// How long an armed Switch 1 launch has been seen without its code mount.
+    ounce::game::Switch1RefusalTimer refusal_;
     /// When pollSwitch1Refusal next looks for that code mount.
     u64 refusal_next_tick_ = 0;
     Result recovery_primary_result_ = 0;

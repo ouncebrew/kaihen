@@ -17,3 +17,5 @@ $cxx $flags -I"$nx/include" tests/game_title_test.cpp -o build/tests/game_title
 build/tests/game_title
 $cxx $flags -I"$nx/include" tests/donor_layout_test.cpp -o build/tests/donor_layout
 build/tests/donor_layout
+$cxx $flags -I"$nx/include" tests/switch1_refusal_test.cpp -o build/tests/switch1_refusal
+build/tests/switch1_refusal

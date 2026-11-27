@@ -33,6 +33,10 @@ constexpr u64 Switch1ProcessTimeoutNs = 5000000000;
 /// How often an armed Switch 1 launch without a process looks for its code
 /// mount in Loader's domain.
 constexpr u64 Switch1RefusalPollNs = 100000000;
+/// How long an armed Switch 1 launch may have no process while walks of
+/// Loader's domain keep failing, unless the last one that succeeded saw its
+/// code mount open.
+constexpr u64 Switch1RefusalDeadlineNs = 30000000000;
 
 /// The value of a fault trace: the trace point that preceded the fault in the
 /// high half, and that point's value (or the gate step that failed) in the low.
@@ -268,7 +272,7 @@ Result GameArm::openPackage() {
     active_storage_ = 0;
     capture_pending_ = false;
     donor_build_pending_ = false;
-    code_closed_tick_ = 0;
+    refusal_.reset();
     refusal_next_tick_ = 0;
     gate_failure_step_ = 0;
     step_started_ = false;
@@ -726,21 +730,24 @@ Result GameArm::pollSwitch1Refusal() {
     // stay armed until the title next ran.
     // Loader is no longer parked: it loads the title while this runs and
     // changes its domain under the walk. A snapshot that fails proves
-    // nothing, so it neither ends the launch nor faults game arming.
+    // nothing: it does not fault game arming nor restart the wait, and it
+    // ends the launch only once the deadline has passed with no walk seeing
+    // the mount open (switch1_refusal.hpp).
     const u64 now = armGetSystemTick();
     if (refusal_next_tick_ && now < refusal_next_tick_) return 0;
     refusal_next_tick_ = now + armNsToTicks(Switch1RefusalPollNs);
     ounce::DomainEntry entries[ounce::MaxDomainEntries];
     u32 count = 0;
     GameMount final_mount(*memory_, mount_config_);
-    if (R_FAILED(final_mount.snapshot(entries, count)) ||
-        containsEntry(entries, count, code_.address)) {
-        code_closed_tick_ = 0;
-        return 0;
+    ounce::game::MountSeen seen = ounce::game::MountSeen::Unknown;
+    if (R_SUCCEEDED(final_mount.snapshot(entries, count))) {
+        seen = containsEntry(entries, count, code_.address) ? ounce::game::MountSeen::Open
+                                                            : ounce::game::MountSeen::Closed;
     }
-    if (!code_closed_tick_) code_closed_tick_ = now;
-    if (armTicksToNs(now - code_closed_tick_) < Switch1ProcessTimeoutNs) return 0;
-    endLaunch();
+    if (refusal_.observe(seen, now, armNsToTicks(Switch1ProcessTimeoutNs),
+                         armNsToTicks(Switch1RefusalDeadlineNs))) {
+        endLaunch();
+    }
     return 0;
 }
 
