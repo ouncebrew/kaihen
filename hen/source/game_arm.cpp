@@ -2,6 +2,7 @@
 #include <cstring>
 #include <switch.h>
 #include "game_arm.hpp"
+#include "game_title.hpp"
 #include "../../common/package.hpp"
 #include "../../common/result.hpp"
 #include "../../libkaihen/source/cmif_server.hpp"
@@ -15,14 +16,6 @@ constexpr Result UnexpectedState = MAKERESULT(Module_Libnx, LibnxError_BadInput)
 constexpr Result ProcessNotFound = MAKERESULT(15, 1);
 /// FS's result for a path that does not exist.
 constexpr Result PathNotFound = MAKERESULT(2, 1);
-/// The content attributes of the game's code file system, in Loader's
-/// OpenCodeFileSystem request and in readSignedPolicy.
-constexpr u32 GameAttributes = 1;
-// Native titles observed here use the 0x04 namespace. This is the Switch 2
-// analogue of Atmosphere's ncm::IsApplicationId range check; the exact native
-// endpoints still need live qualification against more than one game title.
-constexpr u64 ApplicationProgramIdMin = 0x0400000000010000ull;
-constexpr u64 ApplicationProgramIdMax = 0x04ffffffffffffffull;
 constexpr u32 NativeNpadRevision = 5;
 constexpr char GamePackagePath[] = "@Sdcard:/kaihen/bin/game/exefs.nsp";
 constexpr char GameMainPath[] = "/kaihen/bin/game/main";
@@ -34,10 +27,16 @@ constexpr u32 CaptureAttempts = 20;
 constexpr u64 CaptureIntervalNs = 1000000000;
 /// How long sampleR waits for each controller to post a new sample.
 constexpr u64 InputSampleIntervalNs = 50000000;
-
-bool isApplicationProgram(u64 program_id) {
-    return program_id >= ApplicationProgramIdMin && program_id <= ApplicationProgramIdMax;
-}
+/// How long an armed Switch 1 launch may have no process once Loader has
+/// closed its code mount.
+constexpr u64 Switch1ProcessTimeoutNs = 5000000000;
+/// How often an armed Switch 1 launch without a process looks for its code
+/// mount in Loader's domain.
+constexpr u64 Switch1RefusalPollNs = 100000000;
+/// How long an armed Switch 1 launch may have no process while walks of
+/// Loader's domain keep failing, unless the last one that succeeded saw its
+/// code mount open.
+constexpr u64 Switch1RefusalDeadlineNs = 30000000000;
 
 /// The value of a fault trace: the trace point that preceded the fault in the
 /// high half, and that point's value (or the gate step that failed) in the low.
@@ -214,6 +213,9 @@ void GameArm::step() {
     case State::CapturePolicy:
         rc = capturePolicy();
         break;
+    case State::BuildDonor:
+        rc = buildDonor();
+        break;
     case State::WaitExit:
         rc = pollProcessExit();
         break;
@@ -269,6 +271,9 @@ Result GameArm::openPackage() {
     active_title_ = 0;
     active_storage_ = 0;
     capture_pending_ = false;
+    donor_build_pending_ = false;
+    refusal_.reset();
+    refusal_next_tick_ = 0;
     gate_failure_step_ = 0;
     step_started_ = false;
     before_step_count_ = 0;
@@ -300,15 +305,14 @@ Result GameArm::waitForInput() {
     }
 
     if (!policy_ready_) {
-        // The first R launch stays stock. PM identifies the running title,
-        // then its live CodeFS supplies the signed policy for later launches.
+        // No native policy is saved yet. The launch is still armed: a Switch 1
+        // title's donor carries its own policy, and a native title is let
+        // through stock at its second code mount so that its live CodeFS can
+        // supply the policy for later launches.
         capture_pending_ = true;
         capture_attempts_ = 0;
         capture_next_tick_ = 0;
-        trace_.write(GameTracePoint_FirstLaunchCapture);
-        state_ = State::WaitProcess;
-        status_.phase = HenGamePhase_WaitingForProcess;
-        return 0;
+        trace_.write(GameTracePoint_FirstLaunchCapture, 0, 1);
     }
     state_ = State::ParkGate;
     status_.phase = HenGamePhase_Parking;
@@ -341,8 +345,8 @@ Result GameArm::inspectGameRequest(const u8 request[ounce::LoaderRequestSize],
     // Any application from any storage: the R selection decides which launch
     // is armed, not the title.
     const ounce::CodeMountArguments& arguments = decoded.arguments;
-    if (!decoded.open_code || arguments.content_attributes != GameAttributes ||
-        !isApplicationProgram(arguments.program_id)) {
+    if (!decoded.open_code ||
+        !ounce::game::isGameCodeMount(arguments.program_id, arguments.content_attributes)) {
         return 0;
     }
     title = arguments.program_id;
@@ -506,9 +510,37 @@ Result GameArm::receiveGameMount() {
     status_.mounts = 2;
     // Opening a game without R never parks Loader. Once R arms a request,
     // the selection stays latched through both CodeFS mounts.
+    // Loader loads every module of a Switch 1 title from its code FS, so the
+    // title needs a donor built from a Switch 1 ExeFS: its own, or else the
+    // shared default donor. A title with neither starts stock.
+    const bool switch1 = ounce::game::isSwitch1Application(active_title_);
+    if (switch1) {
+        // A Switch 1 title never supplies a native policy.
+        capture_pending_ = false;
+    } else if (!policy_ready_) {
+        // The native game package needs the policy this launch is to supply.
+        // No CodeFS exchange is attempted; the title continues stock.
+        trace_.write(GameTracePoint_FirstLaunchCapture, 0, 2);
+        return restoreGate(0, State::WaitProcess);
+    }
+    const ounce::game::Switch1PackagePath switch1_package(active_title_);
+    const char* package_path = switch1 ? switch1_package.text : GamePackagePath;
     package_.emplace(*memory_, filesystem_root_);
-    rc = package_->open(GamePackagePath, current_mount_);
-    trace_.write(GameTracePoint_PackageOpened, rc);
+    rc = package_->open(package_path, current_mount_);
+    u32 package_kind = 0;
+    if (switch1 && R_FAILED(rc) && !package_->opened()) {
+        // The title's own package did not open and FS made no object. Try the
+        // shared default; PackageOpened value 2 = the default was tried, and
+        // its Result says whether it opened.
+        package_kind = 2;
+        rc = package_->open(ounce::game::Switch1DefaultPackagePath, current_mount_);
+    }
+    trace_.write(GameTracePoint_PackageOpened, rc, package_kind);
+    if (package_kind == 2 && R_FAILED(rc) && !package_->opened() && !donor_build_tried_) {
+        // Neither donor opened: once the title runs stock, build the default
+        // from its ExeFS for the next Switch 1 launch.
+        donor_build_pending_ = true;
+    }
     if (R_FAILED(rc)) {
         // No CodeFS exchange was attempted. Once Loader's original wait is
         // restored, the pending title can continue on its stock CodeFS.
@@ -523,7 +555,9 @@ Result GameArm::waitForProcess() {
     Result rc = active_title_ ? pmdmntGetProcessId(&pid, active_title_)
                               : pmdmntGetApplicationProcessId(&pid);
     if (rc == ProcessNotFound) {
-        return 0;
+        return status_.mounts == 2 && ounce::game::isSwitch1Application(active_title_)
+                   ? pollSwitch1Refusal()
+                   : 0;
     }
     if (R_FAILED(rc) || !pid) {
         return R_FAILED(rc) ? rc : UnexpectedState;
@@ -537,13 +571,23 @@ Result GameArm::waitForProcess() {
         if (R_FAILED(rc)) {
             return rc;
         }
-        if (!allow_bridge_process_ && !isApplicationProgram(title)) {
+        if (!allow_bridge_process_ && !ounce::game::isNativeApplication(title) &&
+            !ounce::game::isSwitch1Application(title)) {
             return UnexpectedState;
         }
         active_title_ = title;
     }
     status_.process_id = pid;
-    if (capture_pending_) {
+    if (donor_build_pending_ && ounce::game::isSwitch1Application(active_title_)) {
+        donor_build_pending_ = false;
+        status_.phase = HenGamePhase_WaitingForExit;
+        state_ = State::BuildDonor;
+        return 0;
+    }
+    // Only a native title's CodeFS holds a policy the native game package can
+    // use. A Switch 1 launch cleared capture_pending_ at its second code mount;
+    // one that reaches here with it set (a park or step failure) captures nothing.
+    if (capture_pending_ && ounce::game::isNativeApplication(active_title_)) {
         state_ = State::CapturePolicy;
         return 0;
     }
@@ -571,15 +615,16 @@ Result GameArm::capturePolicy() {
 
     SignedPolicy policy = {};
     // The live game's CodeFS may reside on a game card, built-in user
-    // storage, or SD. The first launch remains stock, so its Loader request
-    // does not pass through our mount observer to supply the storage ID.
+    // storage, or SD. Each is tried: a launch that fell back before its first
+    // code mount (a park or early step failure) has no observed storage ID.
     const u8 storages[] = {
         NcmStorageId_BuiltInUser,
         NcmStorageId_SdCard,
         NcmStorageId_GameCard,
     };
     for (u8 storage : storages) {
-        rc = readSignedPolicy(loader_root_, active_title_, storage, GameAttributes, &policy);
+        rc = readSignedPolicy(loader_root_, active_title_, storage,
+                              ounce::game::NativeCodeAttributes, &policy);
         if (R_SUCCEEDED(rc)) {
             rc = writeExeFsPackage(filesystem_root_, GameMainPath, GamePackageFile, policy);
             if (R_SUCCEEDED(rc)) {
@@ -604,6 +649,56 @@ Result GameArm::capturePolicy() {
     return 0;
 }
 
+Result GameArm::buildDonor() {
+    // The title must still run: its exit, or another program in its
+    // process, abandons the build before any other step.
+    u64 program_id = 0;
+    Result rc = pmdmntGetProgramId(&program_id, status_.process_id);
+    if (rc == ProcessNotFound || R_FAILED(rc) || program_id != active_title_) {
+        if (donor_build_) donor_build_->abandon();
+        trace_.write(GameTracePoint_DonorBuildFailed, rc,
+                     donor_build_ ? donor_build_->trace() : 0);
+        endDonorBuild();
+        if (rc == ProcessNotFound) return 0;
+        return R_FAILED(rc) ? rc : UnexpectedState;
+    }
+
+    if (!donor_build_) {
+        donor_build_.emplace();
+        rc = donor_build_->begin(loader_root_, filesystem_root_, active_title_,
+                                 active_storage_, GameMainPath);
+        trace_.write(GameTracePoint_DonorBuildStarted, rc,
+                     R_SUCCEEDED(rc) ? donor_build_->count() : donor_build_->trace());
+        // A begin() that fails (32-bit, no hbloader, default.nsp present, SD
+        // create/write) has deleted its part file; it leaves the attempt for a
+        // later title.
+        if (R_FAILED(rc)) {
+            endDonorBuild();
+            return 0;
+        }
+        donor_build_tried_ = true;
+        return 0;
+    }
+
+    bool complete = false;
+    rc = donor_build_->step(complete);
+    if (complete) {
+        trace_.write(GameTracePoint_DonorBuilt, rc, donor_build_->count());
+        endDonorBuild();
+    } else if (R_FAILED(rc)) {
+        trace_.write(GameTracePoint_DonorBuildFailed, rc, donor_build_->trace());
+        endDonorBuild();
+    }
+    return 0;
+}
+
+void GameArm::endDonorBuild() {
+    // Destroying the build closes its files and deletes its part file.
+    donor_build_.reset();
+    status_.phase = HenGamePhase_WaitingForExit;
+    state_ = State::WaitExit;
+}
+
 Result GameArm::pollProcessExit() {
     u64 program_id = 0;
     Result rc = pmdmntGetProgramId(&program_id, status_.process_id);
@@ -614,6 +709,9 @@ Result GameArm::pollProcessExit() {
         return rc;
     }
 
+    // capture_pending_ implies no CodeFS exchange: it is set only without a
+    // policy, a native title then skips the exchange (receiveGameMount), and a
+    // Switch 1 title clears it before its exchange.
     if (!capture_pending_) {
         ounce::DomainEntry entries[ounce::MaxDomainEntries];
         u32 count = 0;
@@ -621,6 +719,39 @@ Result GameArm::pollProcessExit() {
         R_TRY(final_mount.snapshot(entries, count));
         if (containsEntry(entries, count, code_.address)) return 0;
     }
+    endLaunch();
+    return 0;
+}
+
+Result GameArm::pollSwitch1Refusal() {
+    // Loader refuses a Switch 1 title whose package does not fit it (one
+    // without a module Loader requires: rtld, subsdk0 or sdk) after it closes
+    // the code mount, and creates no process. Without this, the launch would
+    // stay armed until the title next ran.
+    // Loader is no longer parked: it loads the title while this runs and
+    // changes its domain under the walk. A snapshot that fails proves
+    // nothing: it does not fault game arming nor restart the wait, and it
+    // ends the launch only once the deadline has passed with no walk seeing
+    // the mount open (switch1_refusal.hpp).
+    const u64 now = armGetSystemTick();
+    if (refusal_next_tick_ && now < refusal_next_tick_) return 0;
+    refusal_next_tick_ = now + armNsToTicks(Switch1RefusalPollNs);
+    ounce::DomainEntry entries[ounce::MaxDomainEntries];
+    u32 count = 0;
+    GameMount final_mount(*memory_, mount_config_);
+    ounce::game::MountSeen seen = ounce::game::MountSeen::Unknown;
+    if (R_SUCCEEDED(final_mount.snapshot(entries, count))) {
+        seen = containsEntry(entries, count, code_.address) ? ounce::game::MountSeen::Open
+                                                            : ounce::game::MountSeen::Closed;
+    }
+    if (refusal_.observe(seen, now, armNsToTicks(Switch1ProcessTimeoutNs),
+                         armNsToTicks(Switch1RefusalDeadlineNs))) {
+        endLaunch();
+    }
+    return 0;
+}
+
+void GameArm::endLaunch() {
     if (package_) package_->close();
     package_.reset();
     mount_.reset();
@@ -628,7 +759,6 @@ Result GameArm::pollProcessExit() {
     allow_bridge_process_ = false;
     status_.serial++;
     state_ = State::OpenPackage;
-    return 0;
 }
 
 Result GameArm::restoreGate(Result result, State on_success) {

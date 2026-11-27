@@ -16,6 +16,8 @@ bool isSdFilePath(const char* path) {
     return path && path[0] == '/' && path[1] != '\0' && std::strlen(path) < FS_MAX_PATH;
 }
 
+} // namespace
+
 Result openSdCardFileSystem(Handle root, FsFileSystem* out) {
     Service service = {};
     serviceCreate(&service, root);
@@ -26,7 +28,7 @@ Result openSdCardFileSystem(Handle root, FsFileSystem* out) {
     );
 }
 
-Result createParents(FsFileSystem* filesystem, const char* path) {
+Result createSdParents(FsFileSystem* filesystem, const char* path) {
     char parent[FS_MAX_PATH] = {};
     std::strncpy(parent, path, sizeof(parent) - 1);
 
@@ -52,8 +54,6 @@ Result createParents(FsFileSystem* filesystem, const char* path) {
     return 0;
 }
 
-} // namespace
-
 SdWriter::~SdWriter() {
     close();
 }
@@ -70,7 +70,7 @@ Result SdWriter::begin(Handle root, const char* path, u64 size) {
     }
     filesystem_open_ = true;
 
-    rc = createParents(&filesystem_, path);
+    rc = createSdParents(&filesystem_, path);
     if (R_FAILED(rc)) {
         close();
         return rc;
